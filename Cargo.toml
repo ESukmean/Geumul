@@ -1,0 +1,20 @@
+[package]
+name = "Geumul"
+version = "0.1.0"
+edition = "2021"
+author = "ESukmean"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "*"
+avl = "*"
+
+# interface related
+tunio = "0.3"
+netconfig = "0.4"
+
+# other utils
+toml = "0.8"
+serde = "1"
