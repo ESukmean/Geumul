@@ -1,22 +1,28 @@
 use std::net::IpAddr;
 
+use bytes::BytesMut;
+use futures_util::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use netconfig::{sys::InterfaceExt, Interface};
 use tunio::{traits::*, *};
 
-use crate::pre_types::*;
+use crate::{
+    config::{Manager, CONFIG},
+    types::*,
+};
 
-struct TunDeviceContext {}
+struct TunDeviceContext;
 impl TunDeviceContext {
     #[cfg(target_family = "unix")]
-    pub fn open(&self, device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) -> TunInterface {
+    pub fn open(&mut self, device_name: String) -> TunInterface {
         let mut driver = DefaultDriver::new().unwrap();
         // Preparing configuration for new interface. We use `Builder` pattern for this.
-        let if_config = DefaultInterface::config_builder()
-            .name(device_name.clone())
+
+        let if_config = DefaultAsyncInterface::config_builder()
+            .name(device_name)
             .build()
             .unwrap();
 
-        let iface = match DefaultInterface::new_up(&mut driver, if_config) {
+        let iface = match DefaultAsyncInterface::new_up(&mut driver, if_config) {
             Ok(iface) => iface,
             Err(e) => {
                 eprintln!("error while create TUN interface: {e:?}");
@@ -24,12 +30,10 @@ impl TunDeviceContext {
             }
         };
 
-        Self::set_device_info(device_name, mtu, ip, subnet);
-
         iface
     }
 
-    fn set_device_info(device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) {
+    pub fn set_device_info(device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) {
         let iface_setting = match netconfig::Interface::try_from_name(device_name) {
             Ok(iface) => iface,
             Err(e) => {
@@ -82,23 +86,85 @@ impl TunDeviceContext {
         }
     }
 }
-pub async fn start(config: ArcSwapConfig, manager_tx: TxMessage) {
-    let mut tun_device_context = TunDeviceContext {};
-    let config = config.load();
-    let iface: TunInterface = tun_device_context.open(
+
+pub fn start_async() {
+    let mut tun_device_context = TunDeviceContext;
+
+    let config = CONFIG.load();
+
+    for _ in 0..config.tun.queue_length.unwrap_or(1) {
+        let tun = tun_device_context.open(config.tun.device_name.clone());
+
+        tokio::spawn(tun_queue_process(tun, config.manager_tx.clone()));
+    }
+
+    TunDeviceContext::set_device_info(
         &config.tun.device_name,
         config.tun.mtu,
         config.tun.ip,
         config.tun.subnet,
     );
+}
 
-    let (tx, rx) = tokio::sync::mpsc::channel(16384);
-    manager_tx.send(ManagerMessage::InsertTx(tx)).await.unwrap();
+async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16384);
 
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    manager_tx
+        .send(ManagerMessage::InsertTx(ModuleId::Tun, tx))
+        .await
+        .unwrap();
+
+    let mut packet_buf = BytesMut::with_capacity((CONFIG.load().tun.mtu * 32) as usize);
+
+    let mut manager_rx_buf = Vec::with_capacity(1000);
     loop {
-        // tokio::select! {
-        // packet_rs =
-        // }
+        tokio::select! {
+            _ = rx.recv_many(&mut manager_rx_buf, 1000) => {
+                tun_queue_process_rx_from_manager(&mut tun_iface, &manager_rx_buf).await;
+
+                manager_rx_buf.clear();
+            }
+            read_len = tun_iface.read(&mut packet_buf) => {
+                if let Ok(len) = read_len {
+                    tun_queue_process_tx_to_manager(&mut tun_iface, &mut packet_buf, len).await;
+                } else {
+                    rx.close();
+
+                    while !rx.is_empty() {
+                        rx.recv_many(&mut manager_rx_buf, 1000).await;
+
+                        manager_tx.send(ManagerMessage::RePushPacketToTunQueue(manager_rx_buf.clone())).await;
+                        manager_rx_buf.clear();
+                    }
+
+                    return;
+                }
+            }
+        }
     }
+}
+
+async fn tun_queue_process_rx_from_manager(
+    tun_iface: &mut TunInterface,
+    buf: &Vec<ManagerMessage>,
+) {
+    for msg in buf {
+        if let ManagerMessage::Packet(data) = msg {
+            tun_iface.write_all(data).await;
+
+            todo!("the queue could be full. we should wait - make no drop :)");
+            todo!("we may merge all packets into one, so make only 1 syscall");
+        } else {
+            unsafe {
+                std::hint::unreachable_unchecked();
+            }
+        }
+    }
+}
+async fn tun_queue_process_tx_to_manager(
+    tun_iface: &mut TunInterface,
+    buf: &mut BytesMut,
+    len: usize,
+) {
+    unimplemented!();
 }

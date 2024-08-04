@@ -10,12 +10,14 @@ author = "ESukmean"
 tokio = { version = "1", features = ["full", "rt"] }
 bytes = "*"
 avl = "*"
+futures-util = "*"
 
 # atomic
 arc-swap = "*"
+once_cell ="*"
 
 # interface related
-tunio = { path = "lib/tunio" }
+tunio = { path = "lib/tunio", version="*", features=["tokio"] }
 netconfig = "0.4"
 
 # dependencies of crates
@@ -25,3 +27,4 @@ advmac = "*"
 toml = "0.8"
 serde = "1"
 enum-map = "2"
+num_cpus = "*"

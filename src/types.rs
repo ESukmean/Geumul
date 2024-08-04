@@ -3,11 +3,13 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use enum_map::Enum;
 
-use crate::config::con_struct::Config;
+use crate::config::types::Config;
 
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
-    InsertTx(Tx<ManagerMessage>),
+    InsertTx(ModuleId, Tx<ManagerMessage>),
+    Packet(bytes::Bytes),
+    RePushPacketToTunQueue(Vec<ManagerMessage>),
 }
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Enum)]
 pub enum ModuleId {
@@ -20,9 +22,9 @@ pub type Rx<T> = tokio::sync::mpsc::Receiver<T>;
 pub type TxMessage = Tx<ManagerMessage>;
 pub type RxMessage = Rx<ManagerMessage>;
 
-pub type ArcSwapConfig = Arc<ArcSwap<Config>>;
+pub type ArcSwapConfig = ArcSwap<Config>;
 
 #[cfg(target_family = "unix")]
-pub type TunInterface = tunio::platform::linux::Interface;
+pub type TunInterface = tunio::DefaultAsyncInterface;
 #[cfg(target_family = "windows")]
 pub type TunInterface = tunio::platform::wintun::Interface;
