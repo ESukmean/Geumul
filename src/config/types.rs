@@ -47,10 +47,8 @@ impl Default for MyTunDevice {
 
 impl Default for Config {
     fn default() -> Self {
-        let tx = unsafe {
-            let tx: MaybeUninit<TxMessage> = MaybeUninit::uninit();
-            tx.assume_init()
-        };
+        // MaybeUninit로 남겨두려 했는뎅... mpsc::channel에 Atomic Counter가 있어서 drop때 Segment fault가 발생함ㅠ
+        // 그러므로, 비어있는 channel을 하나 만들어서 사용함. (length = 0도 assert에 걸림)
 
         Self {
             device_id: [0, 1, 2, 3, 4, 5],
@@ -58,7 +56,7 @@ impl Default for Config {
             end_points: Vec::new(),
             listen: Vec::new(),
             tun: MyTunDevice::default(),
-            manager_tx: tx,
+            manager_tx: tokio::sync::mpsc::channel(1).0,
         }
     }
 }

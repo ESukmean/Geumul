@@ -25,7 +25,6 @@ impl Manager {
         let mut config: Config = (CONFIG.load_full().as_ref()).clone();
 
         config.manager_tx = tx;
-
         CONFIG.store(Arc::new(config));
 
         Self {
