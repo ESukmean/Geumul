@@ -15,6 +15,7 @@ pub struct Config {
     pub tun: MyTunDevice,
 
     pub manager_tx: TxMessage,
+    pub expect_byte_per_sec: usize,
 }
 #[derive(Debug, Clone)]
 pub struct EndPoint {
@@ -57,6 +58,7 @@ impl Default for Config {
             listen: Vec::new(),
             tun: MyTunDevice::default(),
             manager_tx: tokio::sync::mpsc::channel(1).0,
+            expect_byte_per_sec: 1_000_000_000,
         }
     }
 }

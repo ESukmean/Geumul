@@ -16,9 +16,10 @@ futures-util = "*"
 arc-swap = "*"
 once_cell ="*"
 
-# interface related
+# network / interface related
 tunio = { path = "lib/tunio", version="*", features=["tokio"] }
 netconfig = "0.4"
+etherparse = "*"
 
 # dependencies of crates
 advmac = "*"
@@ -28,3 +29,4 @@ toml = "0.8"
 serde = "1"
 enum-map = "2"
 num_cpus = "*"
+array-macro = "2.1.8"

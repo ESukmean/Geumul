@@ -27,4 +27,4 @@ pub type ArcSwapConfig = ArcSwap<Config>;
 #[cfg(target_family = "unix")]
 pub type TunInterface = tunio::DefaultAsyncInterface;
 #[cfg(target_family = "windows")]
-pub type TunInterface = tunio::platform::wintun::Interface;
+pub type TunInterface = tunio::DefaultAsyncInterface;

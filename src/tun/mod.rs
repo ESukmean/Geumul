@@ -1,7 +1,10 @@
-use std::net::IpAddr;
+use array_macro::array;
+use etherparse::SlicedPacket;
+use std::net::{IpAddr, SocketAddr};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use bytes::BytesMut;
-use futures_util::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use futures_util::AsyncWrite;
 use netconfig::{sys::InterfaceExt, Interface};
 use tunio::{traits::*, *};
 
@@ -13,7 +16,7 @@ use crate::{
 struct TunDeviceContext;
 impl TunDeviceContext {
     #[cfg(target_family = "unix")]
-    pub fn open(&mut self, device_name: String) -> TunInterface {
+    pub fn open(&self, device_name: String) -> TunInterface {
         let mut driver = DefaultDriver::new().unwrap();
         // Preparing configuration for new interface. We use `Builder` pattern for this.
 
@@ -114,7 +117,14 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
         .await
         .unwrap();
 
-    let mut packet_buf = BytesMut::with_capacity((CONFIG.load().tun.mtu * 32) as usize);
+    let buffer_alloc_size = {
+        let config = CONFIG.load();
+        std::cmp::max(
+            (config.tun.mtu * 32) as usize,
+            config.expect_byte_per_sec / (100 * num_cpus::get()),
+        )
+    };
+    let mut packet_buf = BytesMut::with_capacity(buffer_alloc_size);
 
     let mut manager_rx_buf = Vec::with_capacity(1000);
     loop {
@@ -124,7 +134,7 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
 
                 manager_rx_buf.clear();
             }
-            read_len = tun_iface.read(&mut packet_buf) => {
+            read_len = tun_iface.read_buf(&mut packet_buf) => {
                 if let Ok(len) = read_len {
                     tun_queue_process_tx_to_manager(&mut tun_iface, &mut packet_buf, len).await;
                 } else {
@@ -161,10 +171,21 @@ async fn tun_queue_process_rx_from_manager(
         }
     }
 }
+
+#[derive(Debug, Clone)]
+struct OffloadCache {
+    dst: Option<SocketAddr>,
+    data: BytesMut,
+}
 async fn tun_queue_process_tx_to_manager(
     tun_iface: &mut TunInterface,
     buf: &mut BytesMut,
     len: usize,
 ) {
-    unimplemented!();
+    // n개의 dst (IP, Port)에 대해 패킷 offload를 실시함
+
+    let arr = array![_ => OffloadCache{ dst:None, data: BytesMut::with_capacity(131072)}; 4];
+
+    let parsed_packet = SlicedPacket::from_ethernet(&buf);
+    println!("--> {buf:?} => {parsed_packet:?}");
 }
