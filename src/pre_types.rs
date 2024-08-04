@@ -21,3 +21,8 @@ pub type TxMessage = Tx<ManagerMessage>;
 pub type RxMessage = Rx<ManagerMessage>;
 
 pub type ArcSwapConfig = Arc<ArcSwap<Config>>;
+
+#[cfg(target_family = "unix")]
+pub type TunInterface = tunio::platform::linux::Interface;
+#[cfg(target_family = "windows")]
+pub type TunInterface = tunio::platform::wintun::Interface;

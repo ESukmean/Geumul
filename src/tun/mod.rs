@@ -8,16 +8,10 @@ use crate::pre_types::*;
 struct TunDeviceContext {}
 impl TunDeviceContext {
     #[cfg(target_family = "unix")]
-    pub fn open(
-        &self,
-        device_name: &String,
-        mtu: u32,
-        ip: IpAddr,
-        subnet: u8,
-    ) -> tunio::platform::linux::Interface {
+    pub fn open(&self, device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) -> TunInterface {
         let mut driver = DefaultDriver::new().unwrap();
         // Preparing configuration for new interface. We use `Builder` pattern for this.
-        let if_config = DefaultDriver::if_config_builder()
+        let if_config = DefaultInterface::config_builder()
             .name(device_name.clone())
             .build()
             .unwrap();
@@ -30,40 +24,12 @@ impl TunDeviceContext {
             }
         };
 
-        self.set_device_info(device_name, mtu, ip, subnet);
+        Self::set_device_info(device_name, mtu, ip, subnet);
 
         iface
     }
 
-    #[cfg(target_os = "windows")]
-    pub fn open(
-        &self,
-        device_name: &String,
-        mtu: u32,
-        ip: IpAddr,
-        subnet: u8,
-    ) -> tunio::platform::wintun::Interface {
-        let mut driver = DefaultDriver::new().unwrap();
-        // Preparing configuration for new interface. We use `Builder` pattern for this.
-        let if_config = DefaultDriver::if_config_builder()
-            .name(device_name.clone())
-            .build()
-            .unwrap();
-
-        let iface = match DefaultInterface::new_up(&mut driver, if_config) {
-            Ok(iface) => iface,
-            Err(e) => {
-                eprintln!("error while create TUN interface: {e:?}");
-                panic!("error while create TUN interface");
-            }
-        };
-
-        self.set_device_info(device_name, mtu, ip, subnet);
-
-        iface
-    }
-
-    fn set_device_info(&self, device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) {
+    fn set_device_info(device_name: &String, mtu: u32, ip: IpAddr, subnet: u8) {
         let iface_setting = match netconfig::Interface::try_from_name(device_name) {
             Ok(iface) => iface,
             Err(e) => {
@@ -118,21 +84,21 @@ impl TunDeviceContext {
 }
 pub async fn start(config: ArcSwapConfig, manager_tx: TxMessage) {
     let mut tun_device_context = TunDeviceContext {};
-    {
-        let config = config.load();
-        let iface = tun_device_context.open(
-            &config.tun.device_name,
-            config.tun.mtu,
-            config.tun.ip,
-            config.tun.subnet,
-        );
+    let config = config.load();
+    let iface: TunInterface = tun_device_context.open(
+        &config.tun.device_name,
+        config.tun.mtu,
+        config.tun.ip,
+        config.tun.subnet,
+    );
 
-        let (tx, rx) = tokio::sync::mpsc::channel(16384);
-        manager_tx.send(ManagerMessage::InsertTx(tx)).await.unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel(16384);
+    manager_tx.send(ManagerMessage::InsertTx(tx)).await.unwrap();
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-        }
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    loop {
+        // tokio::select! {
+        // packet_rs =
+        // }
     }
 }

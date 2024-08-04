@@ -15,7 +15,7 @@ avl = "*"
 arc-swap = "*"
 
 # interface related
-tunio = "0.3"
+tunio = { path = "lib/tunio" }
 netconfig = "0.4"
 
 # dependencies of crates
