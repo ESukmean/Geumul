@@ -30,3 +30,8 @@ serde = "1"
 enum-map = "2"
 num_cpus = "*"
 array-macro = "2.1.8"
+thiserror ="*"
+libc = "*"
+byteorder = "*"
+
+

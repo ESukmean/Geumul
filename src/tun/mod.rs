@@ -1,12 +1,21 @@
 use array_macro::array;
-use etherparse::SlicedPacket;
+use etherparse::{err::packet::SliceError, SlicedPacket};
 use std::net::{IpAddr, SocketAddr};
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use futures_util::AsyncWrite;
 use netconfig::{sys::InterfaceExt, Interface};
 use tunio::{traits::*, *};
+
+#[derive(Error, Debug)]
+pub enum TunDeviceError {
+    #[error("Packet Proto is not valid (it seems not IPv4, IPv6)")]
+    NotValidProto,
+    #[error("Packet is not valid")]
+    NotValidPacket,
+}
 
 use crate::{
     config::{Manager, CONFIG},
@@ -95,7 +104,8 @@ pub fn start_async() {
 
     let config = CONFIG.load();
 
-    for _ in 0..config.tun.queue_length.unwrap_or(1) {
+    // for _ in 0..config.tun.queue_length.unwrap_or(1) {
+    for _ in 0..1 {
         let tun = tun_device_context.open(config.tun.device_name.clone());
 
         tokio::spawn(tun_queue_process(tun, config.manager_tx.clone()));
@@ -117,13 +127,14 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
         .await
         .unwrap();
 
+    // TUN은 read시 프레임 단위로 들어옴. 그러므로 MTU 값이면 충분함.
+    // 그러나, 혹시 미래에 동적으로 MTU를 변경할 수도 있으니... 보험으로 JUMBO Frame 크기를 할당
     let buffer_alloc_size = {
         let config = CONFIG.load();
-        std::cmp::max(
-            (config.tun.mtu * 32) as usize,
-            config.expect_byte_per_sec / (100 * num_cpus::get()),
-        )
+        // MTU 크기
+        std::cmp::max((config.tun.mtu * 32) as usize, 9216)
     };
+
     let mut packet_buf = BytesMut::with_capacity(buffer_alloc_size);
 
     let mut manager_rx_buf = Vec::with_capacity(1000);
@@ -135,8 +146,12 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
                 manager_rx_buf.clear();
             }
             read_len = tun_iface.read_buf(&mut packet_buf) => {
+
                 if let Ok(len) = read_len {
-                    tun_queue_process_tx_to_manager(&mut tun_iface, &mut packet_buf, len).await;
+                    let result = tun_queue_process_tx_to_manager(&mut tun_iface, &mut packet_buf, len).await;
+                    println!("===> {:?}", result);
+
+                    packet_buf.clear();
                 } else {
                     rx.close();
 
@@ -181,11 +196,36 @@ async fn tun_queue_process_tx_to_manager(
     tun_iface: &mut TunInterface,
     buf: &mut BytesMut,
     len: usize,
-) {
+) -> Result<(), TunDeviceError> {
     // n개의 dst (IP, Port)에 대해 패킷 offload를 실시함
 
     let arr = array![_ => OffloadCache{ dst:None, data: BytesMut::with_capacity(131072)}; 4];
 
-    let parsed_packet = SlicedPacket::from_ethernet(&buf);
-    println!("--> {buf:?} => {parsed_packet:?}");
+    while !buf.is_empty() {
+        let packet = etherparse::IpSlice::from_slice(&buf);
+        let packet = match packet {
+            Ok(pkt) => pkt,
+            Err(etherparse::err::ip::SliceError::Len(_)) => return Ok(()),
+            Err(err) => {
+                eprintln!("parse {err:?}");
+                return Err(TunDeviceError::NotValidPacket);
+            }
+        };
+
+        match packet {
+            etherparse::IpSlice::Ipv4(packet) => {
+                println!("IPv4: {packet:?}");
+                buf.advance(packet.header().total_len() as usize);
+            }
+            etherparse::IpSlice::Ipv6(packet) => {
+                println!("IPv6: {packet:?}");
+                buf.advance(
+                    (packet.header().header_len() + packet.header().payload_length() as usize),
+                );
+            }
+        };
+    }
+
+    return Ok(());
+    // println!("--> {buf:?} => {parsed_packet:?}");
 }
