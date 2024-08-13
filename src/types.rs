@@ -8,7 +8,8 @@ use crate::config::types::Config;
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
     InsertTx(ModuleId, Tx<ManagerMessage>),
-    Packet(bytes::Bytes),
+    TxPacket(std::net::IpAddr, bytes::Bytes),
+    RxPacket(bytes::Bytes),
     RePushPacketToTunQueue(Vec<ManagerMessage>),
 }
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Enum)]

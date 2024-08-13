@@ -127,13 +127,18 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
         .await
         .unwrap();
 
-    // TUN은 read시 프레임 단위로 들어옴. 그러므로 MTU 값이면 충분함.
-    // 그러나, 혹시 미래에 동적으로 MTU를 변경할 수도 있으니... 보험으로 JUMBO Frame 크기를 할당
-    let buffer_alloc_size = {
-        let config = CONFIG.load();
-        // MTU 크기
-        std::cmp::max((config.tun.mtu * 32) as usize, 9216)
-    };
+    // 단순한 TUN이면 MTU값 어치만 들고있으면 되는데, Offload를 쓰기 때문에 버퍼를 맞춰줘야 함
+    // https://blog.cloudflare.com/virtual-networking-101-understanding-tap
+    // these features the application must be ready to receive much larger buffers - up to 65507 bytes for IPv4 and 65527 for IPv6.
+
+    // 단순 TUN 장치일때 버퍼크기
+    // let buffer_alloc_size = {
+    //     let config = CONFIG.load();
+    //     // MTU 크기
+    //     std::cmp::max((config.tun.mtu * 32) as usize, 9216)
+    // };
+
+    let buffer_alloc_size = (65535 * 4) as usize;
 
     let mut packet_buf = BytesMut::with_capacity(buffer_alloc_size);
 
@@ -141,16 +146,14 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
     loop {
         tokio::select! {
             _ = rx.recv_many(&mut manager_rx_buf, 1000) => {
-                tun_queue_process_rx_from_manager(&mut tun_iface, &manager_rx_buf).await;
+                tun_queue_process_rx_from_manager(&mut tun_iface, &mut manager_rx_buf).await;
 
                 manager_rx_buf.clear();
             }
             read_len = tun_iface.read_buf(&mut packet_buf) => {
 
                 if let Ok(len) = read_len {
-                    let result = tun_queue_process_tx_to_manager(&mut tun_iface, &mut packet_buf, len).await;
-                    println!("===> {:?}", result);
-
+                    tun_queue_process_tx_to_manager(&manager_tx, &mut tun_iface, &mut packet_buf, len).await;
                     packet_buf.clear();
                 } else {
                     rx.close();
@@ -171,11 +174,23 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
 
 async fn tun_queue_process_rx_from_manager(
     tun_iface: &mut TunInterface,
-    buf: &Vec<ManagerMessage>,
+    buf: &mut Vec<ManagerMessage>,
 ) {
-    for msg in buf {
-        if let ManagerMessage::Packet(data) = msg {
-            tun_iface.write_all(data).await;
+    for msg in buf.drain(..) {
+        if let ManagerMessage::RxPacket(data) = msg {
+            let packet = etherparse::IpSlice::from_slice(&data);
+            let packet = match packet {
+                Ok(pkt) => println!(
+                    "read buf {:?} -> {:?} / {pkt:?}",
+                    pkt.source_addr(),
+                    pkt.destination_addr()
+                ),
+                _ => todo!(),
+            };
+
+            tun_iface.write_all(&data).await;
+
+            continue;
 
             todo!("the queue could be full. we should wait - make no drop :)");
             todo!("we may merge all packets into one, so make only 1 syscall");
@@ -187,19 +202,20 @@ async fn tun_queue_process_rx_from_manager(
     }
 }
 
-#[derive(Debug, Clone)]
-struct OffloadCache {
-    dst: Option<SocketAddr>,
-    data: BytesMut,
-}
+// #[derive(Debug, Clone)]
+// struct OffloadCache {
+//     dst: Option<SocketAddr>,
+//     data: BytesMut,
+// }
 async fn tun_queue_process_tx_to_manager(
+    tx_manager: &TxMessage,
     tun_iface: &mut TunInterface,
     buf: &mut BytesMut,
     len: usize,
 ) -> Result<(), TunDeviceError> {
     // n개의 dst (IP, Port)에 대해 패킷 offload를 실시함
 
-    let arr = array![_ => OffloadCache{ dst:None, data: BytesMut::with_capacity(131072)}; 4];
+    // let arr = array![_ => OffloadCache{ dst:None, data: BytesMut::with_capacity(131072)}; 4];
 
     while !buf.is_empty() {
         let packet = etherparse::IpSlice::from_slice(&buf);
@@ -212,16 +228,29 @@ async fn tun_queue_process_tx_to_manager(
             }
         };
 
+        let addr = packet.destination_addr();
+        // TODO: 같은 주소에 대해서 패킷 합치기를 해야함
+        // TUN MultiQueue를 통해서 여러개의 큐를 사용중임. manager는 단일코어이기 때문에,,, 여기서 잡다한것을 다 해서 보내야 함.
+
         match packet {
             etherparse::IpSlice::Ipv4(packet) => {
-                println!("IPv4: {packet:?}");
-                buf.advance(packet.header().total_len() as usize);
+                let packet_len = packet.header().total_len() as usize;
+                tx_manager.try_send(ManagerMessage::TxPacket(
+                    addr,
+                    buf.split_to(packet_len).freeze(),
+                ));
+
+                // buf.advance(packet_len);
             }
             etherparse::IpSlice::Ipv6(packet) => {
-                println!("IPv6: {packet:?}");
-                buf.advance(
-                    (packet.header().header_len() + packet.header().payload_length() as usize),
-                );
+                let packet_len =
+                    packet.header().header_len() + packet.header().payload_length() as usize;
+
+                tx_manager.try_send(ManagerMessage::TxPacket(
+                    addr,
+                    buf.split_to(packet_len).freeze(),
+                ));
+                // buf.advance(packet_len);
             }
         };
     }
