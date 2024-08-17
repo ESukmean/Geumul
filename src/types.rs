@@ -1,14 +1,15 @@
-use std::sync::Arc;
+use std::{ops::DerefMut, sync::Arc};
 
 use arc_swap::ArcSwap;
+use bytes::BufMut;
 use enum_map::Enum;
 
-use crate::config::types::Config;
+use crate::manager::types::Config;
 
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
     InsertTx(ModuleId, Tx<ManagerMessage>),
-    TxPacket(std::net::IpAddr, bytes::Bytes),
+    TxPacket(std::net::IpAddr, HeaderAllocatedPacket<bytes::Bytes>),
     RxPacket(bytes::Bytes),
     RePushPacketToTunQueue(Vec<ManagerMessage>),
 }
@@ -29,3 +30,53 @@ pub type ArcSwapConfig = ArcSwap<Config>;
 pub type TunInterface = tunio::DefaultAsyncInterface;
 #[cfg(target_family = "windows")]
 pub type TunInterface = tunio::DefaultAsyncInterface;
+
+pub trait OptionHelper<T> {
+    fn then<F>(self, func: F)
+    where
+        F: FnOnce(T);
+}
+impl<T> OptionHelper<T> for Option<T> {
+    #[inline(always)]
+    fn then<F>(self, func: F)
+    where
+        F: FnOnce(T),
+    {
+        if let Some(x) = self {
+            func(x);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeaderAllocatedPacket<T>(pub T);
+impl<T> core::ops::Deref for HeaderAllocatedPacket<T>
+where
+    T: core::ops::Deref,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl From<bytes::BytesMut> for HeaderAllocatedPacket<bytes::BytesMut> {
+    fn from(mut value: bytes::BytesMut) -> Self {
+        unsafe { value.advance_mut(6) };
+        Self(value)
+    }
+}
+impl DerefMut for HeaderAllocatedPacket<bytes::BytesMut> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Into<(HeaderAllocatedPacket<bytes::Bytes>, bytes::BytesMut)>
+    for HeaderAllocatedPacket<bytes::BytesMut>
+{
+    fn into(mut self) -> (HeaderAllocatedPacket<bytes::Bytes>, bytes::BytesMut) {
+        let data = self.0.split();
+
+        (HeaderAllocatedPacket::<bytes::Bytes>(data.freeze()), self.0)
+    }
+}

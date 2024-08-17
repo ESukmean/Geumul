@@ -1,10 +1,13 @@
 use array_macro::array;
 use etherparse::{err::packet::SliceError, SlicedPacket};
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    ops::DerefMut,
+};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures_util::AsyncWrite;
 use netconfig::{sys::InterfaceExt, Interface};
 use tunio::{traits::*, *};
@@ -18,7 +21,7 @@ pub enum TunDeviceError {
 }
 
 use crate::{
-    config::{Manager, CONFIG},
+    manager::{Manager, CONFIG},
     types::*,
 };
 
@@ -31,6 +34,7 @@ impl TunDeviceContext {
 
         let if_config = DefaultAsyncInterface::config_builder()
             .name(device_name)
+            // .layer(Layer::L2)
             .build()
             .unwrap();
 
@@ -105,7 +109,7 @@ pub fn start_async() {
     let config = CONFIG.load();
 
     // for _ in 0..config.tun.queue_length.unwrap_or(1) {
-    for _ in 0..1 {
+    for _ in 0..4 {
         let tun = tun_device_context.open(config.tun.device_name.clone());
 
         tokio::spawn(tun_queue_process(tun, config.manager_tx.clone()));
@@ -141,6 +145,7 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
     let buffer_alloc_size = (65535 * 4) as usize;
 
     let mut packet_buf = BytesMut::with_capacity(buffer_alloc_size);
+    let mut packet_typed = HeaderAllocatedPacket::from(packet_buf);
 
     let mut manager_rx_buf = Vec::with_capacity(1000);
     loop {
@@ -150,26 +155,39 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
 
                 manager_rx_buf.clear();
             }
-            read_len = tun_iface.read_buf(&mut packet_buf) => {
-
-                if let Ok(len) = read_len {
-                    tun_queue_process_tx_to_manager(&manager_tx, &mut tun_iface, &mut packet_buf, len).await;
-                    packet_buf.clear();
-                } else {
-                    rx.close();
-
-                    while !rx.is_empty() {
-                        rx.recv_many(&mut manager_rx_buf, 1000).await;
-
-                        manager_tx.send(ManagerMessage::RePushPacketToTunQueue(manager_rx_buf.clone())).await;
-                        manager_rx_buf.clear();
-                    }
-
+            Ok(read_len) = tun_iface.read_buf(packet_typed.deref_mut()) => {
+                if read_len == 0 {
+                    cleanup(rx, manager_tx).await;
                     return;
                 }
+
+                let (pkt, remain) = packet_typed.into();
+                packet_buf = remain;
+                packet_typed = HeaderAllocatedPacket::from(packet_buf);
+
+                tun_queue_process_tx_to_manager(&manager_tx, &mut tun_iface, pkt, read_len);
             }
         }
+
+        // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     }
+}
+async fn cleanup(mut rx: RxMessage, tx: TxMessage) {
+    rx.close();
+
+    let mut manager_rx_buf = Vec::with_capacity(1000);
+
+    while !rx.is_empty() {
+        rx.recv_many(&mut manager_rx_buf, 1000).await;
+
+        tx.send(ManagerMessage::RePushPacketToTunQueue(
+            manager_rx_buf.clone(),
+        ))
+        .await;
+        manager_rx_buf.clear();
+    }
+
+    return;
 }
 
 async fn tun_queue_process_rx_from_manager(
@@ -179,14 +197,13 @@ async fn tun_queue_process_rx_from_manager(
     for msg in buf.drain(..) {
         if let ManagerMessage::RxPacket(data) = msg {
             let packet = etherparse::IpSlice::from_slice(&data);
-            let packet = match packet {
-                Ok(pkt) => println!(
+            if let Ok(pkt) = packet {
+                println!(
                     "read buf {:?} -> {:?} / {pkt:?}",
                     pkt.source_addr(),
                     pkt.destination_addr()
-                ),
-                _ => todo!(),
-            };
+                );
+            }
 
             tun_iface.write_all(&data).await;
 
@@ -207,53 +224,53 @@ async fn tun_queue_process_rx_from_manager(
 //     dst: Option<SocketAddr>,
 //     data: BytesMut,
 // }
-async fn tun_queue_process_tx_to_manager(
+fn tun_queue_process_tx_to_manager(
     tx_manager: &TxMessage,
     tun_iface: &mut TunInterface,
-    buf: &mut BytesMut,
+    buf: HeaderAllocatedPacket<Bytes>,
     len: usize,
 ) -> Result<(), TunDeviceError> {
     // n개의 dst (IP, Port)에 대해 패킷 offload를 실시함
 
     // let arr = array![_ => OffloadCache{ dst:None, data: BytesMut::with_capacity(131072)}; 4];
 
-    while !buf.is_empty() {
-        let packet = etherparse::IpSlice::from_slice(&buf);
-        let packet = match packet {
-            Ok(pkt) => pkt,
-            Err(etherparse::err::ip::SliceError::Len(_)) => return Ok(()),
-            Err(err) => {
-                eprintln!("parse {err:?}");
-                return Err(TunDeviceError::NotValidPacket);
-            }
-        };
+    // match etherparse::Ethernet2Slice::from_slice_with_crc32_fcs(buf) {
+    //     Ok(pkt) => println!("read pkt {pkt:?}"),
+    //     Err(e) => eprintln!("parse eth2 frame err {e:?}"),
+    // };
 
-        let addr = packet.destination_addr();
-        // TODO: 같은 주소에 대해서 패킷 합치기를 해야함
-        // TUN MultiQueue를 통해서 여러개의 큐를 사용중임. manager는 단일코어이기 때문에,,, 여기서 잡다한것을 다 해서 보내야 함.
+    // println!("readbuf {buf:#02x}");
 
-        match packet {
-            etherparse::IpSlice::Ipv4(packet) => {
-                let packet_len = packet.header().total_len() as usize;
-                tx_manager.try_send(ManagerMessage::TxPacket(
-                    addr,
-                    buf.split_to(packet_len).freeze(),
-                ));
+    let packet = etherparse::IpSlice::from_slice(&buf[6..]);
+    let packet = match packet {
+        Ok(pkt) => pkt,
+        Err(etherparse::err::ip::SliceError::Len(_)) => return Ok(()),
+        Err(err) => {
+            eprintln!("TUN parse E => {err:?}");
+            return Err(TunDeviceError::NotValidPacket);
+        }
+    };
 
-                // buf.advance(packet_len);
-            }
-            etherparse::IpSlice::Ipv6(packet) => {
-                let packet_len =
-                    packet.header().header_len() + packet.header().payload_length() as usize;
+    let addr = packet.destination_addr();
+    tx_manager.try_send(ManagerMessage::TxPacket(addr, buf));
 
-                tx_manager.try_send(ManagerMessage::TxPacket(
-                    addr,
-                    buf.split_to(packet_len).freeze(),
-                ));
-                // buf.advance(packet_len);
-            }
-        };
-    }
+    // TODO: 같은 주소에 대해서 패킷 합치기를 해야함
+    // TUN MultiQueue를 통해서 여러개의 큐를 사용중임. manager는 단일코어이기 때문에,,, 여기서 잡다한것을 다 해서 보내야 함.
+
+    // match packet {
+    //     etherparse::IpSlice::Ipv4(packet) => {
+    //         // let packet_len = packet.header().total_len() as usize;
+
+    //         // buf.advance(packet_len);
+    //     }
+    //     etherparse::IpSlice::Ipv6(packet) => {
+    //         // let packet_len =
+    //         //     packet.header().header_len() + packet.header().payload_length() as usize;
+
+    //         tx_manager.try_send(ManagerMessage::TxPacket(addr, buf));
+    //         // buf.advance(packet_len);
+    //     }
+    // };
 
     return Ok(());
     // println!("--> {buf:?} => {parsed_packet:?}");

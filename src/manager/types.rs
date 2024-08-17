@@ -4,12 +4,15 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndPointStrategy {}
+
 use super::TxMessage;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub secret_key: [u8; 16],
     pub device_id: [u8; 6],
-    pub end_points: HashMap<IpAddr, Vec<EndPoint>>,
+    pub end_points: HashMap<IpAddr, EndPoint>,
 
     pub listen: Vec<SocketAddr>,
 
@@ -20,7 +23,8 @@ pub struct Config {
 }
 #[derive(Debug, Clone)]
 pub struct EndPoint {
-    pub addr: SocketAddr,
+    pub addr: Vec<SocketAddr>,
+    pub strategy: EndPointStrategy,
     pub secret_key: String,
 }
 #[derive(Debug, Clone)]
