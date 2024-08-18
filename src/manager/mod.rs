@@ -3,7 +3,7 @@ use crate::types::*;
 use std::{
     borrow::{Borrow, BorrowMut},
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr, UdpSocket},
     ops::Deref,
     sync::Arc,
 };
@@ -13,7 +13,7 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use enum_map::EnumMap;
 use once_cell::sync::Lazy;
-use socket_strategy::SocketStrategy;
+use socket_strategy::ConnectionBackend;
 use types::Config;
 
 mod helper;
@@ -28,7 +28,7 @@ pub struct Manager {
 
     tx_cnt: usize,
 
-    socket: HashMap<IpAddr, SocketStrategy>,
+    socket: HashMap<IpAddr, ConnectionBackend>,
 }
 
 impl Manager {
@@ -74,7 +74,7 @@ impl Manager {
         let mut config_ptr_cache: arc_swap::Cache<&arc_swap::ArcSwapAny<Arc<Config>>, Arc<Config>> =
             arc_swap::Cache::new(&*CONFIG);
     }
-    async fn process_message(&mut self, msgs: &mut Vec<ManagerMessage>) {
+    fn process_message(&mut self, msgs: &mut Vec<ManagerMessage>) {
         println!("* manager rcv {msgs:?}");
 
         let mut config_ptr_cache: arc_swap::Cache<&arc_swap::ArcSwapAny<Arc<Config>>, Arc<Config>> =
@@ -84,9 +84,12 @@ impl Manager {
             match msg {
                 ManagerMessage::InsertTx(module, tx) => self.tx[module].push(tx),
                 ManagerMessage::TxPacket(addr, packet) => {
-                    self.send_packet(config_ptr_cache.load(), &addr, packet)
-                        .await;
+                    if let Err(pkt_icmp) = self.send_packet(config_ptr_cache.load(), &addr, packet)
+                    {
+                        self.tx_packet(pkt_icmp);
+                    }
                 }
+                ManagerMessage::RxPacket(pkt) => self.tx_packet(pkt),
                 _ => (),
             }
         }
@@ -103,12 +106,14 @@ impl Manager {
         tx_list[self.tx_cnt].try_send(ManagerMessage::RxPacket(packet));
     }
 
-    async fn send_packet(
+    fn send_packet(
         &mut self,
         config: &Arc<Config>,
         addr: &IpAddr,
-        packet: HeaderAllocatedPacket<bytes::Bytes>,
-    ) -> Option<Bytes> {
+        packet: HeaderAllocatedPayload<bytes::Bytes>,
+    ) -> Result<(), Bytes> {
+        let packet = packet.0;
+
         // 애초에 등록이 안되어 있는 EndPoint 주소
         if !config.end_points.contains_key(addr) {
             let data = helper::generate_icmp_no_route_to_host_reply(
@@ -116,19 +121,29 @@ impl Manager {
                 helper::ICMPDestinationUnreachableCode::DestinationHostUnknown,
             );
 
-            return Some(Bytes::copy_from_slice(&data));
+            return Err(Bytes::copy_from_slice(&data));
         }
 
-        if let Some(sock) = self.socket.get_mut(addr).and_then(|ep| ep.select_socket()) {
-            sock.send(&packet).await;
-        }
+        return match self.socket.get_mut(addr).map(|ep| ep.send_packet(&packet)) {
+            Some(Ok(())) => Ok(()),
+            Some(_) => {
+                // error while sending - maybe TX channel queue full by NIC queue full
+                let data = helper::generate_icmp_no_route_to_host_reply(
+                    unsafe { packet[..28].try_into().unwrap_unchecked() },
+                    helper::ICMPDestinationUnreachableCode::DestinationHostUnknown,
+                );
 
-        // 지금 등록된 소켓이 없었다는 상태
-        let data = helper::generate_icmp_no_route_to_host_reply(
-            unsafe { packet[..28].try_into().unwrap_unchecked() },
-            helper::ICMPDestinationUnreachableCode::SourceRouteFailed,
-        );
+                Err(Bytes::copy_from_slice(&data))
+            }
+            _ => {
+                // no socket available
+                let data = helper::generate_icmp_no_route_to_host_reply(
+                    unsafe { packet[..28].try_into().unwrap_unchecked() },
+                    helper::ICMPDestinationUnreachableCode::SourceRouteFailed,
+                );
 
-        Some(Bytes::copy_from_slice(&data))
+                Err(Bytes::copy_from_slice(&data))
+            }
+        };
     }
 }

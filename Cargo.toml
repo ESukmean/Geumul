@@ -15,11 +15,13 @@ futures-util = "*"
 # atomic
 arc-swap = "*"
 once_cell ="*"
+dashmap = "*"
 
 # network / interface related
 tunio = { path = "lib/tunio", version="*", features=["tokio"] }
 netconfig = "0.4"
 etherparse = "*"
+socket2 = { version = "*", features = ["all"] }
 
 # dependencies of crates
 advmac = "*"

@@ -14,7 +14,8 @@ pub struct Config {
     pub device_id: [u8; 6],
     pub end_points: HashMap<IpAddr, EndPoint>,
 
-    pub listen: Vec<SocketAddr>,
+    // pub listen: Vec<SocketAddr>,
+    pub listen_port: u16,
 
     pub tun: MyTunDevice,
 
@@ -60,7 +61,8 @@ impl Default for Config {
             device_id: [0, 1, 2, 3, 4, 5],
             secret_key: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             end_points: HashMap::with_capacity(256),
-            listen: Vec::new(),
+            // listen: Vec::new(),
+            listen_port: 33600,
             tun: MyTunDevice::default(),
             manager_tx: tokio::sync::mpsc::channel(1).0,
             expect_byte_per_sec: 1_000_000_000,

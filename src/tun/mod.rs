@@ -145,7 +145,7 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
     let buffer_alloc_size = (65535 * 4) as usize;
 
     let mut packet_buf = BytesMut::with_capacity(buffer_alloc_size);
-    let mut packet_typed = HeaderAllocatedPacket::from(packet_buf);
+    let mut packet_typed = HeaderAllocatedPayload::from(packet_buf);
 
     let mut manager_rx_buf = Vec::with_capacity(1000);
     loop {
@@ -163,7 +163,7 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
 
                 let (pkt, remain) = packet_typed.into();
                 packet_buf = remain;
-                packet_typed = HeaderAllocatedPacket::from(packet_buf);
+                packet_typed = HeaderAllocatedPayload::from(packet_buf);
 
                 tun_queue_process_tx_to_manager(&manager_tx, &mut tun_iface, pkt, read_len);
             }
@@ -227,7 +227,7 @@ async fn tun_queue_process_rx_from_manager(
 fn tun_queue_process_tx_to_manager(
     tx_manager: &TxMessage,
     tun_iface: &mut TunInterface,
-    buf: HeaderAllocatedPacket<Bytes>,
+    buf: HeaderAllocatedPayload<Bytes>,
     len: usize,
 ) -> Result<(), TunDeviceError> {
     // n개의 dst (IP, Port)에 대해 패킷 offload를 실시함

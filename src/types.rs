@@ -9,7 +9,7 @@ use crate::manager::types::Config;
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
     InsertTx(ModuleId, Tx<ManagerMessage>),
-    TxPacket(std::net::IpAddr, HeaderAllocatedPacket<bytes::Bytes>),
+    TxPacket(std::net::IpAddr, HeaderAllocatedPayload<bytes::Bytes>),
     RxPacket(bytes::Bytes),
     RePushPacketToTunQueue(Vec<ManagerMessage>),
 }
@@ -49,8 +49,8 @@ impl<T> OptionHelper<T> for Option<T> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct HeaderAllocatedPacket<T>(pub T);
-impl<T> core::ops::Deref for HeaderAllocatedPacket<T>
+pub struct HeaderAllocatedPayload<T>(pub T);
+impl<T> core::ops::Deref for HeaderAllocatedPayload<T>
 where
     T: core::ops::Deref,
 {
@@ -60,23 +60,26 @@ where
         &self.0
     }
 }
-impl From<bytes::BytesMut> for HeaderAllocatedPacket<bytes::BytesMut> {
+impl From<bytes::BytesMut> for HeaderAllocatedPayload<bytes::BytesMut> {
     fn from(mut value: bytes::BytesMut) -> Self {
         unsafe { value.advance_mut(6) };
         Self(value)
     }
 }
-impl DerefMut for HeaderAllocatedPacket<bytes::BytesMut> {
+impl DerefMut for HeaderAllocatedPayload<bytes::BytesMut> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
-impl Into<(HeaderAllocatedPacket<bytes::Bytes>, bytes::BytesMut)>
-    for HeaderAllocatedPacket<bytes::BytesMut>
+impl Into<(HeaderAllocatedPayload<bytes::Bytes>, bytes::BytesMut)>
+    for HeaderAllocatedPayload<bytes::BytesMut>
 {
-    fn into(mut self) -> (HeaderAllocatedPacket<bytes::Bytes>, bytes::BytesMut) {
+    fn into(mut self) -> (HeaderAllocatedPayload<bytes::Bytes>, bytes::BytesMut) {
         let data = self.0.split();
 
-        (HeaderAllocatedPacket::<bytes::Bytes>(data.freeze()), self.0)
+        (
+            HeaderAllocatedPayload::<bytes::Bytes>(data.freeze()),
+            self.0,
+        )
     }
 }
