@@ -12,6 +12,9 @@ type SocketEndpointPair = (SocketAddr, SocketAddr);
 type SocketSink = tokio::sync::mpsc::Sender<bytes::Bytes>;
 
 pub struct ConnectionBackend {
+    /// seq_no < 10 일때, 특수 필드로서 작동함.
+    /// seq_no == 0: syn, 1: syn-ack, 2: ack, 3: rst
+    /// seq_no가 max가 된 이후로는 10 이후로 넘어가도록 제어 해야함.
     seq_no: u32,
 
     sockets: Arc<DashMap<SocketAddr, SocketSink>>,
@@ -19,11 +22,13 @@ pub struct ConnectionBackend {
 }
 
 impl ConnectionBackend {
+    /// payload: MSS (65535B) 이하인 패킷 데이터.
+    /// UDP 안에 UDP가 실리는것이므로, UDP 헤더가 포함된 데이터가 64KB 이하이어야 함
     pub fn send_packet(&mut self, payload: &bytes::Bytes) -> Result<(), ()> {
         todo!();
     }
     #[inline]
-    pub fn get_sequence_no(&mut self) -> u32 {
+    fn get_sequence_no(&mut self) -> u32 {
         self.seq_no += 1;
 
         self.seq_no
@@ -49,12 +54,9 @@ impl ConnectionBackend {
         drop(guard);
 
         tokio::spawn(async move {
-            let sock =
-                tokio::time::timeout(std::time::Duration::from_secs(20), Self::create_sock(addr))
-                    .await;
-            let sock = if let Ok(Ok(sock)) = sock {
-                sock
-            } else {
+            // create_sock: infinte loop for listening
+            let sock = Self::create_sock(addr).await;
+            let Ok(sock) = sock else {
                 let mut guard = connection_create_lock_ptr.lock().await;
                 guard.remove(&addr);
 
@@ -72,7 +74,8 @@ impl ConnectionBackend {
             loop {
                 tokio::select! {
                     payload = sock.recv_buf(&mut read_buf) => {
-
+                        // TODO: 특수한 seq_no가 들어오면 소켓 초기화를 위해서 break;
+                        break;
                     }
                     payload = rx.recv_many(&mut payload_buf, 1024) => {
                         for payload in payload_buf.drain(..) {
@@ -80,12 +83,13 @@ impl ConnectionBackend {
                         }
                     }
                     _ = interval.tick() => {
-                        // n초 동안 ping 패킷이 안왔으면 socket broken 처리
+                        // TODO: n초 동안 ping 패킷이 안왔으면 socket broken 처리
                         break;
                     }
                 }
             }
 
+            // 정리
             let mut guard = connection_create_lock_ptr.lock().await;
             guard.remove(&addr);
             if let Some((_, tx)) = socket_sink_ptr.remove(&addr.1) {
@@ -93,6 +97,12 @@ impl ConnectionBackend {
             }
             drop(guard);
 
+            // manager쪽에 socket을 새로 만들어라고 알림
+            tx_manager
+                .send(super::ManagerMessage::RevalidateConnection(Some(
+                    addr.1.ip(),
+                )))
+                .await;
             while rx.recv_many(&mut payload_buf, 1024).await > 0 {}
         });
     }
@@ -108,11 +118,8 @@ impl ConnectionBackend {
             .and_then(|_| raw_sock.set_reuse_port(true))
             .unwrap();
 
-        let sock = if let Ok(sock) =
-            tokio::net::UdpSocket::from_std(std::net::UdpSocket::from(raw_sock))
-        {
-            sock
-        } else {
+        let Ok(sock) = tokio::net::UdpSocket::from_std(std::net::UdpSocket::from(raw_sock)) else {
+            // TODO: Panic 말고 제대로 처리
             panic!("convert std udp to tokio udp failed");
         };
 
@@ -121,10 +128,11 @@ impl ConnectionBackend {
         }
 
         let mut recv_buf = [0u8; 256];
-        sock.send(b"knock knock - hole punching").await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        while let Err(_) = tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        // 양쪽에서 syn을 보내면 경우의 수를 생각해야 함.
+        // TODO: IP 주소가 낮은 쪽이 SYN을 보내고, IP 주소가 높은 쪽이 Server 역할을 하도록 수정
+        while tokio::time::timeout(std::time::Duration::from_secs(6), async {
             // write handshake
             sock.send(b"~~~~~").await;
 
@@ -132,6 +140,7 @@ impl ConnectionBackend {
             sock.recv(&mut recv_buf).await;
         })
         .await
+        .is_err()
         {}
 
         // reply ack

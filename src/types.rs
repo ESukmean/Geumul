@@ -12,6 +12,7 @@ pub enum ManagerMessage {
     TxPacket(std::net::IpAddr, HeaderAllocatedPayload<bytes::Bytes>),
     RxPacket(bytes::Bytes),
     RePushPacketToTunQueue(Vec<ManagerMessage>),
+    RevalidateConnection(Option<std::net::IpAddr>),
 }
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Enum)]
 pub enum ModuleId {

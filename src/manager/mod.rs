@@ -90,6 +90,17 @@ impl Manager {
                     }
                 }
                 ManagerMessage::RxPacket(pkt) => self.tx_packet(pkt),
+                ManagerMessage::RevalidateConnection(endpoint) => {
+                    match endpoint {
+                        None => {
+                            // check if there's added or removed endpoint
+                            // signal connect them
+                        }
+                        Some(addr) => {
+                            // signal connect them
+                        }
+                    }
+                }
                 _ => (),
             }
         }
