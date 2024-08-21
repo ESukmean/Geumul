@@ -35,5 +35,3 @@ array-macro = "2.1.8"
 thiserror ="*"
 libc = "*"
 byteorder = "*"
-
-

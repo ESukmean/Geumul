@@ -109,7 +109,7 @@ pub fn start_async() {
     let config = CONFIG.load();
 
     // for _ in 0..config.tun.queue_length.unwrap_or(1) {
-    for _ in 0..4 {
+    for _ in 0..num_cpus::get() {
         let tun = tun_device_context.open(config.tun.device_name.clone());
 
         tokio::spawn(tun_queue_process(tun, config.manager_tx.clone()));
@@ -155,7 +155,7 @@ async fn tun_queue_process(mut tun_iface: TunInterface, manager_tx: TxMessage) {
 
                 manager_rx_buf.clear();
             }
-            Ok(read_len) = tun_iface.read_buf(packet_typed.deref_mut()) => {
+            Ok(read_len) = tun_iface.read_buf(&mut *packet_typed) => {
                 if read_len == 0 {
                     cleanup(rx, manager_tx).await;
                     return;

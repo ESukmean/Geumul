@@ -1,4 +1,4 @@
-use std::{ops::DerefMut, sync::Arc};
+use std::{net::SocketAddr, ops::DerefMut, sync::Arc};
 
 use arc_swap::ArcSwap;
 use bytes::BufMut;
@@ -18,6 +18,8 @@ pub enum ManagerMessage {
 pub enum ModuleId {
     Tun,
 }
+
+pub type SocketEndpointPair = (SocketAddr, SocketAddr);
 
 pub type Tx<T> = tokio::sync::mpsc::Sender<T>;
 pub type Rx<T> = tokio::sync::mpsc::Receiver<T>;

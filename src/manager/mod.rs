@@ -14,7 +14,7 @@ use bytes::Bytes;
 use enum_map::EnumMap;
 use once_cell::sync::Lazy;
 use socket_strategy::ConnectionBackend;
-use types::Config;
+use types::{Config, EndPoint};
 
 mod helper;
 mod socket_strategy;
@@ -37,6 +37,8 @@ impl Manager {
         let mut config: Config = (CONFIG.load_full().as_ref()).clone();
 
         let endpoint_cnt = config.end_points.capacity();
+
+        tx.blocking_send(ManagerMessage::RevalidateConnection(None));
 
         config.manager_tx = tx;
         CONFIG.store(Arc::new(config));
@@ -64,7 +66,7 @@ impl Manager {
                         break;
                     }
 
-                    self.process_message(&mut buffer);
+                    self.process_message(&mut buffer).await;
                 }
             }
         }
@@ -74,7 +76,7 @@ impl Manager {
         let mut config_ptr_cache: arc_swap::Cache<&arc_swap::ArcSwapAny<Arc<Config>>, Arc<Config>> =
             arc_swap::Cache::new(&*CONFIG);
     }
-    fn process_message(&mut self, msgs: &mut Vec<ManagerMessage>) {
+    async fn process_message(&mut self, msgs: &mut Vec<ManagerMessage>) {
         println!("* manager rcv {msgs:?}");
 
         let mut config_ptr_cache: arc_swap::Cache<&arc_swap::ArcSwapAny<Arc<Config>>, Arc<Config>> =
@@ -95,6 +97,8 @@ impl Manager {
                         None => {
                             // check if there's added or removed endpoint
                             // signal connect them
+
+                            self.revalidate_connection(config_ptr_cache.load()).await;
                         }
                         Some(addr) => {
                             // signal connect them
@@ -121,9 +125,9 @@ impl Manager {
         &mut self,
         config: &Arc<Config>,
         addr: &IpAddr,
-        packet: HeaderAllocatedPayload<bytes::Bytes>,
+        payload: HeaderAllocatedPayload<bytes::Bytes>,
     ) -> Result<(), Bytes> {
-        let packet = packet.0;
+        let packet = payload.0;
 
         // 애초에 등록이 안되어 있는 EndPoint 주소
         if !config.end_points.contains_key(addr) {
@@ -135,9 +139,22 @@ impl Manager {
             return Err(Bytes::copy_from_slice(&data));
         }
 
-        return match self.socket.get_mut(addr).map(|ep| ep.send_packet(&packet)) {
-            Some(Ok(())) => Ok(()),
-            Some(_) => {
+        // send complete packet
+
+        return if let Some(conn_backend) = self.socket.get_mut(addr) {
+            let seq_no = conn_backend.get_sequence_no();
+            let len = (packet.len() - 6) as u16;
+
+            let packet = if let Ok(mut bmut) = packet.try_into_mut() {
+                bmut[0..4].copy_from_slice(&seq_no.to_be_bytes());
+                bmut[4..6].copy_from_slice(&len.to_be_bytes());
+
+                bmut.freeze()
+            } else {
+                panic!("convert to bytes -> bytesmut failed");
+            };
+
+            if conn_backend.send_complete_packet(&packet).is_err() {
                 // error while sending - maybe TX channel queue full by NIC queue full
                 let data = helper::generate_icmp_no_route_to_host_reply(
                     unsafe { packet[..28].try_into().unwrap_unchecked() },
@@ -145,16 +162,81 @@ impl Manager {
                 );
 
                 Err(Bytes::copy_from_slice(&data))
+            } else {
+                Ok(())
             }
-            _ => {
-                // no socket available
-                let data = helper::generate_icmp_no_route_to_host_reply(
-                    unsafe { packet[..28].try_into().unwrap_unchecked() },
-                    helper::ICMPDestinationUnreachableCode::SourceRouteFailed,
-                );
+        } else {
+            // no socket available
+            let data = helper::generate_icmp_no_route_to_host_reply(
+                unsafe { packet[..28].try_into().unwrap_unchecked() },
+                helper::ICMPDestinationUnreachableCode::SourceRouteFailed,
+            );
 
-                Err(Bytes::copy_from_slice(&data))
-            }
+            Err(Bytes::copy_from_slice(&data))
         };
+    }
+
+    async fn revalidate_connection(&mut self, config: &Arc<Config>) {
+        println!("==> revalidate");
+
+        let mut keys_connected: Vec<_> = self.socket.iter_mut().collect();
+        let mut keys_new: Vec<_> = config.end_points.iter().collect();
+
+        keys_connected.sort_by_key(|v| v.0);
+        keys_new.sort_by_key(|v| v.0);
+
+        let mut key_connected_idx: usize = 0;
+        let mut key_new_idx: usize = 0;
+
+        let mut to_insert: Vec<(IpAddr, EndPoint)> = Vec::with_capacity(8);
+        let mut to_remove: Vec<IpAddr> = Vec::with_capacity(8);
+
+        loop {
+            match (
+                keys_connected.get_mut(key_connected_idx),
+                keys_new.get(key_new_idx),
+            ) {
+                (Some((connected, connected_item)), Some((new, new_item))) => {
+                    if connected == new {
+                        connected_item.load_config_and_init(new_item).await;
+
+                        key_connected_idx += 1;
+                        key_new_idx += 1;
+                    } else if *connected < *new {
+                        connected_item.shutdown().await;
+                        to_remove.push(**connected);
+
+                        key_connected_idx += 1;
+                    } else if *connected > *new {
+                        to_insert.push((**new, (*new_item).clone()));
+
+                        key_new_idx += 1;
+                    }
+                }
+                (Some((connected, connected_item)), None) => {
+                    connected_item.shutdown().await;
+                    to_remove.push(**connected);
+
+                    key_connected_idx += 1;
+                }
+                (None, Some((new, new_item))) => {
+                    to_insert.push((**new, (*new_item).clone()));
+
+                    key_new_idx += 1;
+                }
+                (None, None) => break,
+            }
+        }
+
+        println!("revalidate {to_remove:?} / {to_insert:?}");
+        for rm in to_remove.drain(..) {
+            self.socket.remove(&rm);
+        }
+        for add in to_insert.drain(..) {
+            let mut connection_backend = ConnectionBackend::default();
+            connection_backend.load_config_and_init(&add.1).await;
+
+            self.socket.insert(add.0, connection_backend);
+        }
     }
 }
