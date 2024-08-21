@@ -131,8 +131,9 @@ impl Manager {
 
         // 애초에 등록이 안되어 있는 EndPoint 주소
         if !config.end_points.contains_key(addr) {
-            let data = helper::generate_icmp_no_route_to_host_reply(
-                unsafe { packet[..28].try_into().unwrap_unchecked() },
+            println!("end point not registered");
+            let data: [u8; 56] = helper::generate_icmp_no_route_to_host_reply(
+                unsafe { packet[6..34].try_into().unwrap_unchecked() },
                 helper::ICMPDestinationUnreachableCode::DestinationHostUnknown,
             );
 
@@ -145,20 +146,18 @@ impl Manager {
             let seq_no = conn_backend.get_sequence_no();
             let len = (packet.len() - 6) as u16;
 
-            let packet = if let Ok(mut bmut) = packet.try_into_mut() {
-                bmut[0..4].copy_from_slice(&seq_no.to_be_bytes());
-                bmut[4..6].copy_from_slice(&len.to_be_bytes());
+            let mut bmut = bytes::BytesMut::from(packet);
 
-                bmut.freeze()
-            } else {
-                panic!("convert to bytes -> bytesmut failed");
-            };
+            bmut[0..4].copy_from_slice(&seq_no.to_be_bytes());
+            bmut[4..6].copy_from_slice(&len.to_be_bytes());
+
+            let packet = bmut.freeze();
 
             if conn_backend.send_complete_packet(&packet).is_err() {
                 // error while sending - maybe TX channel queue full by NIC queue full
                 let data = helper::generate_icmp_no_route_to_host_reply(
-                    unsafe { packet[..28].try_into().unwrap_unchecked() },
-                    helper::ICMPDestinationUnreachableCode::DestinationHostUnknown,
+                    unsafe { packet[6..34].try_into().unwrap_unchecked() },
+                    helper::ICMPDestinationUnreachableCode::DestinationHostUnreachable,
                 );
 
                 Err(Bytes::copy_from_slice(&data))
@@ -168,7 +167,7 @@ impl Manager {
         } else {
             // no socket available
             let data = helper::generate_icmp_no_route_to_host_reply(
-                unsafe { packet[..28].try_into().unwrap_unchecked() },
+                unsafe { packet[6..34].try_into().unwrap_unchecked() },
                 helper::ICMPDestinationUnreachableCode::SourceRouteFailed,
             );
 
