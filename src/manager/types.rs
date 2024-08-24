@@ -12,7 +12,7 @@ pub enum EndPointStrategy {
 use super::{SocketEndpointPair, TxMessage};
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub secret_key: [u8; 16],
+    pub secret_key: [u8; 32],
     pub device_id: [u8; 6],
     pub end_points: HashMap<IpAddr, EndPoint>,
 
@@ -75,7 +75,10 @@ impl Default for Config {
 
         Self {
             device_id: [0, 1, 2, 3, 4, 5],
-            secret_key: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            secret_key: [
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25, 26, 27, 28, 29, 30, 31,
+            ],
             end_points,
             // listen: Vec::new(),
             listen_port: 33600,

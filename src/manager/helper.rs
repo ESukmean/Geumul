@@ -1,5 +1,5 @@
 #[repr(u8)]
-#[warn(dead_code)]
+#[warn(dead_code, never_)]
 pub enum ICMPDestinationUnreachableCode {
     DestinationNetworkUnreachable = 0,
     DestinationHostUnreachable = 1,

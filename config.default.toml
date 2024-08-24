@@ -1,0 +1,67 @@
+# 32byte가 필요함 (AES 256bit = 32byte)
+# 데이터를 넣으면 내부적으로 SHA-512로 해싱해서 사용함
+secret_key = "SECRET_KEY_TO_BE_FILLED"
+
+# device id = mac 주소에 해당
+device_id = "00:11:22:33:44:55:66"
+
+# listen port = UDP 수신 포트
+listen_port = 33800
+
+# expect_byte_per_sec = 일단은 사용안하는거로.
+# 원래는 이거 기준으로 queue 길이, 버퍼 크기 설정 등을 하려 했음.
+expect_byte_per_sec = 0
+
+# TUN device 설정
+[tun]
+device_name = "esm1"
+ip = "172.29.0.2"
+subnet = 24
+mtu = 9000
+# 사용안됨. 먼 미래에 쓰일수도?
+queue_length = 0
+
+
+# End-Point (여러개 설정 가능)
+[[endpoint]]
+represent_address = "172.29.0.3"
+secret_key = "THEIR_SIDE_SECRET_KEY"
+# 지금은 사용 안됨. RAID-0 처럼 완전 복사를 할 것인지, RAID-1 처럼 처리량을 확장하는 식으로 쓸 건지 표기
+# mirror, round-robin
+strategy = "mirror"
+
+[[endpoint.addr]]
+# 하나의 PC에서도 KT, SKT 등등 여러개의 통신사가 연결되어 있을 수 있음
+# KT => KT / SKT => SKT / LGT => LGT 와 같은 연결을 원할 수도 있으므로, 
+# "내 쪽의 IP"와 "상대측 IP"를 모두 설정할 수 있도록 함 [만약 상관없으면 0.0.0.0을 표기하면 됨)
+# 여기는 사용할 IP 주소만 입력하면 됨. 포트는 상단의 listen_port가 사용됨.
+my_ip_address = "0.0.0.0"
+
+# 상대측은 IP주소와 포트 주소를 같이 입력 해야함.
+their_address = "127.0.0.1:33900"
+
+# 추후, round-robin이 들어간다면... weight 옵션이 들어갈 것임. 
+# (100mbps, 10mbps 회선이 같이 묶였을때, 같은 속도로 데이터를 보낸다면 packet drop 발생할 수 있음)
+
+[[endpoint.addr]]
+my_ip_address = "0.0.0.0"
+their_address = "127.0.0.2:33900"
+
+[[endpoint.addr]]
+my_ip_address = "0.0.0.0"
+their_address = "127.0.0.3:33900"
+
+[[endpoint]]
+represent_address = "172.29.0.4"
+secret_key = "THEIR_SIDE_SECRET_KEY"
+# 지금은 사용 안됨. RAID-0 처럼 완전 복사를 할 것인지, RAID-1 처럼 처리량을 확장하는 식으로 쓸 건지 표기
+# mirror, round-robin
+strategy = "mirror"
+
+[[endpoint.addr]]
+my_ip_address = "0.0.0.0"
+their_address = "127.0.0.2:34000"
+
+[[endpoint.addr]]
+my_ip_address = "0.0.0.0"
+their_address = "127.0.0.3:34000"
